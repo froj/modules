@@ -23,6 +23,9 @@ Mathieu Rouvinez \\
 \and
 Antoine Albertelli \\
 \texttt{antoine.albertelli@gmail.com}
+\and
+Florian Reinhard \\
+\texttt{florian.reinhard@epfl.ch}
 }
  
 % Titre du document
@@ -43,17 +46,24 @@ Antoine Albertelli \\
 
 \section{Cinématique directe}
 
+\begin{figure}[h]
+    \centering
+    \includegraphics{holonomic_base.png}
+    \caption{Les dimensions qui définissent la base holonome.}
+    \label{fig:holonomic_base}
+\end{figure}
+
 \subsection{Translation}
 
 \begin{equation}
-    \omega_{i,t} = \frac{V}{r_i} \cdot \cos\left( \theta_R - \theta_V + \beta_i - \frac{\pi}{2} \right)
+    \omega_{i,t} = \frac{v}{r_i} \cdot \cos\left( \phi - \theta_V + \beta_i - \frac{\pi}{2} \right)
     \label{eqn:forward-translation}
 \end{equation}
 
 \begin{description}
     \item[$\omega_{i,t}$] Vitesse de rotation de la roue $i$ pour la translation de la base holonome.
     \item[$v$] Vitesse de déplacement du robot.
-    \item[$\theta_R$] Angle absolu de l'orientation du robot.
+    \item[$\phi$] Angle absolu de l'orientation du robot.
     \item[$\theta_V$] Angle absolu de la direction de vitesse du robot.
     \item[$\beta_i$] Angle relatif au robot de l'orientation de la roue $i$.
     \item[$r_i$] Rayon de la roue $i$.
@@ -172,6 +182,248 @@ pos_x = pos_x + cos(heading-pi/2)*mov_x - ...
 pos_y = pos_y + sin(heading-pi/2)*mov_x + ...
         cos(heading-pi/2)*mov_y;
 \end{lstlisting}
+
+
+\section{Intégration d'un IMU}
+
+\subsection{\emph{Kalman Filter}}
+
+\subsubsection{L'algorithme}
+
+Control update:
+\begin{equation}
+    \bar{\mu}_t = g \left(u, \mu_{t-1} \right) 
+\end{equation}
+
+\begin{equation}
+    \bar{\Sigma}_t = G_t \Sigma_{t-1} G_t^T + R_t
+\end{equation}
+
+Measurement update:
+\begin{equation}
+    K_t = \bar{\Sigma}_t H_t^T \left( H_t \bar{\Sigma}_t H_t^T + Q_t \right) ^{-1}
+\end{equation}
+
+\begin{equation}
+    \mu_t = \bar{\mu}_t + K_t \left( z_t - h \left( \bar{\mu}_t \right) \right)
+\end{equation}
+
+\begin{equation}
+    \Sigma_t = \left( I - K_t H_t \right) \bar{\Sigma}_t
+\end{equation}
+
+C'est l'algorithme d'un \emph{extended kalman filter} pour un \emph{control} et un
+\emph{measurement} au même temps $ t $, mais il est aussi possible d'appliquer un
+\emph{control update} sur un \emph{state belief} $ \bar{\mu}_{t-1} $, s'il y avait
+pas encore un \emph{measurement}. Il est aussi possible d'avoir plusieurs,
+différents \emph{measurements} et les intégrer avec la même formule.
+
+Si l'erreur reel du \emph{control} et du \emph{measurement} est bien dans la
+variation prévue ($ R_t $ et $ Q_t $), un \emph{measurement} normalement
+diminue la variation du \emph{state}, qui s'accumule par juste appliquer
+des \emph{controls}.
+
+\subsubsection{Le cas d'un robot holonome}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics{coordinate_system.png}
+    \caption{La définition du système des coordonnées local et global.}
+    \label{fig:coordinate_system}
+\end{figure}
+
+\paragraph{Kalman state}
+
+Le \emph{Kalman state} est représente par un vecteur, qui consiste dans ce cas des
+coordonnées $x$ et $y$, l'orientation $\phi$ et leur dérivées correspondantes.
+
+\begin{equation}
+    \mu_t =
+    \left( \begin{array}{c}
+        x \\
+        y \\
+        \phi \\
+        \dot{x} \\
+        \dot{y} \\
+        \dot{\phi} \\
+    \end{array} \right)
+    \label{State}
+\end{equation}
+
+\paragraph{Kalman control}
+
+Un \emph{Kalman control} contient des informations imprévisibles, qui s'effectuent
+sur le \emph{state} et qui est préférablement la dérivée du plus grand ordre dans
+le système.
+Les mesures de la \emph{IMU} sont exactement ça.
+
+\begin{equation}
+    u_t =
+    \left( \begin{array}{c}
+        a_x \\
+        a_y \\
+        \Omega_z \\
+    \end{array} \right)
+    \label{Control}
+\end{equation}
+
+\paragraph{Kalman measurement}
+
+Une mesure \emph{Kalman} est un input, qui ce laisse prévoir à partir du \emph{state}
+actuel.
+Comme par exemple la vitesse de rotation des roues $ \omega_i $ ou une
+mesure absolue de la position (balises).
+
+\begin{equation}
+    z_t =
+    \left( \begin{array}{c}
+        \omega_1 \\
+        \omega_2 \\
+        \omega_3 \\
+    \end{array} \right)
+    \label{Measurement}
+\end{equation}
+
+\paragraph{Fonction de transfert de control à state}
+
+Une fonction $ g \left(u, \mu \right) $ calcule un \emph{state belief}
+$ \bar{\mu} $ à partir du \emph{state} actuel et du \emph{control}.
+
+\begin{equation}
+    g \left(u, \mu \right) =
+    \left( \begin{array}{l}
+        x + \Delta t \cdot \dot{x} \\
+        y + \Delta t \cdot \dot{y} \\
+        \phi + \Delta t \cdot \dot{\phi} \\
+        \dot{x} + \Delta t \cdot (cos(\phi) \cdot a_x + sin(\phi) \cdot a_y) \\
+        \dot{y} + \Delta t \cdot (sin(\phi) \cdot a_x + cos(\phi) \cdot a_y) \\
+        \Omega_z \\
+    \end{array} \right)
+    \label{g}
+\end{equation}
+
+\paragraph{G}
+
+Parce que un filtre \emph{Kalman} fonctionne seulement avec des fonctions de transfert
+linéaires, on prend l'expansion Taylor du premier degré. Pour cela on a besoin
+du jacobien de $ g(u, \mu) $.
+
+\begin{equation}
+    G \left(u, \mu \right) =
+    \left( \begin{array}{cccccc}
+        1 & 0 & 0 & \Delta t & 0 & 0\\
+        0 & 1 & 0 & 0 & \Delta t & 0\\
+        0 & 0 & 1 & 0 & 0 & \Delta t\\
+        0 & 0 & \Delta t \cdot (-sin(\phi) \cdot a_x + cos(\phi) \cdot a_y) & 1 & 0 & 0 \\
+        0 & 0 & \Delta t \cdot ( cos(\phi) \cdot a_x - sin(\phi) \cdot a_y) & 0 & 1 & 0 \\
+        0 & 0 & 0 & 0 & 0 & 0 \\
+    \end{array} \right)
+    \label{G}
+\end{equation}
+
+\paragraph{Fonction de transfert du state belief à measurement}
+
+La fonction qui prévoit la vitesse de rotation des roues à partir du \emph{state}.
+
+\begin{equation}
+    h \left(u, \bar{\mu}\right) =
+    \left( \begin{array}{l}
+        \frac{\sqrt{\dot{x}^2 + \dot{y}^2}}{r_1} \cdot \cos \left( \phi - \tan^{-1} \left(\frac{\dot{y}}{\dot{x}}\right) + \beta_1 - \frac{\pi}{2} \right)
+            - \dot{\phi} \cdot \frac{D_1}{r_1} \\
+        \frac{\sqrt{\dot{x}^2 + \dot{y}^2}}{r_2} \cdot \cos \left( \phi - \tan^{-1} \left(\frac{\dot{y}}{\dot{x}}\right) + \beta_2 - \frac{\pi}{2} \right)
+            - \dot{\phi} \cdot \frac{D_2}{r_2} \\
+        \frac{\sqrt{\dot{x}^2 + \dot{y}^2}}{r_3} \cdot \cos \left( \phi - \tan^{-1} \left(\frac{\dot{y}}{\dot{x}}\right) + \beta_3 - \frac{\pi}{2} \right)
+            - \dot{\phi} \cdot \frac{D_3}{r_3} \\
+    \end{array} \right)
+    \label{h}
+\end{equation}
+Il faut utiliser \texttt{atan2()} pour $ tan^{-1} \left(\frac{\dot{y}}{\dot{x}} \right) $.
+
+
+\paragraph{H}
+
+Le jacobien de $ h\left(u, \bar{\mu}\right) $.
+
+\begin{equation}
+    H\left(\bar{\mu}\right) =
+    \left( \begin{array}{cccccc}
+        \frac{\partial h_1\left(\bar{\mu}\right)}{\partial x} & \frac{\partial h_1(\bar{\mu})}{\partial y} & \frac{\partial h_1(\bar{\mu})}{\partial \phi} &
+        \frac{\partial h_1\left(\bar{\mu}\right)}{\partial \dot{x}} & \frac{\partial h_1(\bar{\mu})}{\partial \dot{y}} & \frac{\partial h_1(\bar{\mu})}{\partial \dot{\phi}}\\
+        \frac{\partial h_2\left(\bar{\mu}\right)}{\partial x} & \frac{\partial h_2(\bar{\mu})}{\partial y} & \frac{\partial h_2(\bar{\mu})}{\partial \phi} &
+        \frac{\partial h_2\left(\bar{\mu}\right)}{\partial \dot{x}} & \frac{\partial h_2(\bar{\mu})}{\partial \dot{y}} & \frac{\partial h_2(\bar{\mu})}{\partial \dot{\phi}}\\
+        \frac{\partial h_3\left(\bar{\mu}\right)}{\partial x} & \frac{\partial h_3(\bar{\mu})}{\partial y} & \frac{\partial h_3(\bar{\mu})}{\partial \phi} &
+        \frac{\partial h_3\left(\bar{\mu}\right)}{\partial \dot{x}} & \frac{\partial h_3(\bar{\mu})}{\partial \dot{y}} & \frac{\partial h_3(\bar{\mu})}{\partial \dot{\phi}}\\
+    \end{array} \right)
+    \label{}
+\end{equation}
+
+On pose:
+
+\[ \begin{array}{ccc}
+    v = \sqrt{\dot{x}^2 + \dot{y}^2}, &
+    \frac{\partial v}{\partial \dot{x}} = \frac{\dot{x}}{v}, &
+    \frac{\partial v}{\partial \dot{y}} = \frac{\dot{y}}{v} \\
+\end{array} \]
+
+\[ \begin{array}{ccc}
+    \theta = \tan^{-1}\left( \frac{\dot{y}}{\dot{x}} \right), &
+    \frac{\partial \theta}{\partial \dot{x}} = - \frac{\dot{y}}{v^2}, &
+    \frac{\partial \theta}{\partial \dot{y}} = \frac{\dot{x}}{v^2} \\
+\end{array} \]
+
+\[ \Psi_i = \phi - \theta + \beta_i - \frac{\pi}{2} \]
+
+Alors,
+
+\begin{equation}
+    \begin{array}{l}
+        \frac{\partial h_i\left(\bar{\mu}\right)}{\partial x} = 0 \\
+        \frac{\partial h_i\left(\bar{\mu}\right)}{\partial y} = 0 \\
+        \frac{\partial h_i\left(\bar{\mu}\right)}{\partial \phi} = - \frac{v}{r_i} \cdot \sin \left( \Psi_i \right) \\
+        \frac{\partial h_i\left(\bar{\mu}\right)}{\partial \dot{x}} = \frac{\dot{x}}{r_i \cdot v} \cdot \cos \left( \Psi_i \right)
+            - \frac{\dot{y}}{r_i \cdot v} \sin \left( \Psi_i \right) \\
+        \frac{\partial h_i\left(\bar{\mu}\right)}{\partial \dot{y}} = \frac{\dot{y}}{r_i \cdot v} \cdot \cos \left( \Psi_i \right)
+            + \frac{\dot{x}}{r_i \cdot v} \sin \left( \Psi_i \right)\\
+        \frac{\partial h_i\left(\bar{\mu}\right)}{\partial \dot{\phi}} = - \frac{D_i}{r_i}\\
+    \end{array}
+\end{equation}
+
+\paragraph{Covariance du \emph{control}}
+\begin{equation}
+    R =
+    \left( \begin{array}{ccc}
+        S_{a_x} & 0 & 0 \\
+        0 & S_{a_y} & 0 \\
+        0 & 0 & S_{\Omega_z} \\
+    \end{array} \right)
+\end{equation}
+
+\paragraph{Covariance du \emph{measurement}}
+\begin{equation}
+    Q =
+    \left( \begin{array}{ccc}
+        S_{\omega_1} & 0 & 0 \\
+        0 & S_{\omega_2} & 0 \\
+        0 & 0 & S_{\omega_3} \\
+    \end{array} \right)
+\end{equation}
+
+\paragraph{Covariance initiale du \emph{state}}
+\begin{equation}
+    \Sigma_0 =
+    \left( \begin{array}{cccccc}
+        S_{x_0} & 0 & 0 & 0 & 0 & 0 \\
+        0 & S_{y_0} & 0 & 0 & 0 & 0 \\
+        0 & 0 & S_{\phi_0} & 0 & 0 & 0 \\
+        0 & 0 & 0 & 0 & 0 & 0 \\
+        0 & 0 & 0 & 0 & 0 & 0 \\
+        0 & 0 & 0 & 0 & 0 & 0 \\
+    \end{array} \right)
+\end{equation}
+
+Il faut trouver la precision avec laquelle on arrive à positionner le robot au
+début du match. On peut dire que la variation initiale de la vitesse est bien
+égale à zéro.
 
 
 \end{document}
